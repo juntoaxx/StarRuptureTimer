@@ -42,19 +42,15 @@ Without the mod loader installed and running, `StarRuptureTimer.dll` will not be
 
 1. Install the **AlienMod Loader** if you haven't already (see link above).
 2. Download `StarRuptureTimer.dll` from the Files tab on this page.
-3. Place `StarRuptureTimer.dll` in your mod loader plugins folder:
+3. Place `StarRuptureTimer.dll` in:
    ```
-   <StarRupture game folder>\Plugins\
+   steamapps/common/StarRupture/StarRupture/Binaries/Win64/Plugins/
    ```
-   The exact path depends on where you installed the game and the mod loader.  
-   Refer to the AlienMod Loader documentation if you are unsure.
-4. Launch the game. The overlay will appear automatically.
-
-On first launch the mod loader will create a config file at:
-```
-<StarRupture game folder>\Plugins\StarRuptureTimer\StarRuptureTimer.ini
-```
-Edit this file to customise the overlay (see Configuration below).
+4. Launch the game. On first run the mod loader generates a config file at:
+   ```
+   steamapps/common/StarRupture/StarRupture/Binaries/Win64/Plugins/StarRuptureTimer/StarRuptureTimer.ini
+   ```
+   Edit this file to customise the overlay (see Configuration below).
 
 ---
 
@@ -168,6 +164,17 @@ We do not claim ownership of any game data, SDK structures, or techniques source
 All credit for the underlying game belongs to the Star Rupture development team.
 
 ---
+
+## Disclaimer — AI / Vibe Coding
+
+> **⚠ This mod was built entirely through vibe coding using [Claude](https://claude.ai) (Anthropic AI).**
+>
+> That means the code was written iteratively through conversation with an AI assistant, not by a formally trained software engineer reviewing every line with deep expertise.  
+> While it has been tested and is working on the developer's machine, **there is no guarantee it is free of bugs, memory issues, or unexpected behaviour.**
+>
+> **Use this mod entirely at your own risk.**  
+> The author takes no responsibility for crashes, corrupted saves, bans, or any other issues that may arise from its use.  
+> Always keep backups and stay within the game's terms of service.
 
 ## License
 
