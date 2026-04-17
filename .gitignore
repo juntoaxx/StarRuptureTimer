@@ -1,0 +1,22 @@
+# Visual Studio build outputs
+bin/
+obj/
+*.user
+*.aps
+*.suo
+.vs/
+
+# Compiled plugin
+*.dll
+*.pdb
+*.lib
+*.exp
+*.obj
+*.iobj
+*.ipdb
+
+# SDK source files — get these from AlienXAXS/StarRupture-Plugin-SDK
+../StarRupture SDK/
+../include/
+../Shared.props
+../ExamplePlugin/
