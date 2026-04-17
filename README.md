@@ -179,7 +179,15 @@ If you improve it, share it — that is the spirit it was built in.
 
 ---
 
+## Source Code
+
+The full source code is available on GitHub:  
+https://github.com/juntoaxx/StarRuptureTimer
+
+---
+
 ## Bugs / Feedback
 
 Found a bug or want to suggest something?  
-Drop a comment on the Nexus page or open an issue on the repository.
+Drop a comment on the Nexus page or open an issue at:  
+https://github.com/juntoaxx/StarRuptureTimer/issues
