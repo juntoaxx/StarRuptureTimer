@@ -48,7 +48,7 @@ Without the mod loader installed and running, `StarRuptureTimer.dll` will not be
    ```
 4. Launch the game. On first run the mod loader generates a config file at:
    ```
-   steamapps/common/StarRupture/StarRupture/Binaries/Win64/Plugins/StarRuptureTimer/StarRuptureTimer.ini
+   steamapps/common/StarRupture/StarRupture/Binaries/Win64/Plugins/config/StarRuptureTimer.ini
    ```
    Edit this file to customise the overlay (see Configuration below).
 
