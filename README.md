@@ -31,7 +31,7 @@ The overlay displays the phase name, a MM:SS countdown, and a progress bar — a
 You must install it before this mod will work.
 
 - **AlienMod Loader** by AlienXAXS  
-  → https://www.nexusmods.com/starrupture/mods/1  
+  → https://www.nexusmods.com/starrupture/mods/89  
   *(or search "AlienMod Loader" on the Star Rupture Nexus page)*
 
 Without the mod loader installed and running, `StarRuptureTimer.dll` will not be loaded by the game.
