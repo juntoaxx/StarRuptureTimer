@@ -2,7 +2,7 @@
 
 **Author:** Juntoaxx  
 **Game:** Star Rupture  
-**Version:** 1.0.0  
+**Version:** 1.1.0  
 **License:** Public Domain — free to use, modify, and redistribute. No ownership claimed.
 
 ---
@@ -10,6 +10,11 @@
 ## What It Does
 
 StarRuptureTimer adds a lightweight HUD overlay to Star Rupture that shows the current **Arcadia rupture phase** and a live **countdown timer** — so you always know exactly how long until the next phase change without having to watch the sky.
+
+In v1.1, timer display is **server-authoritative only**:
+- The countdown is shown only when confirmed server timer values are valid.
+- While waiting for valid server timing, the timer shows **`XX:XX` in red**.
+- No predictive/guess timer fallback is used.
 
 ### Phases Tracked
 
@@ -21,7 +26,16 @@ StarRuptureTimer adds a lightweight HUD overlay to Star Rupture that shows the c
 | Arcadia Cooling | Blue | Wave receding |
 | Stabilizing | Teal-Grey | Regrowth after the wave |
 
-The overlay displays the phase name, a MM:SS countdown, and a progress bar — all styled to match the game's sci-fi HUD aesthetic.
+The overlay displays the phase name and a MM:SS countdown, styled to match the game's sci-fi HUD aesthetic.
+
+---
+
+## What's New in v1.1
+
+1. Server-only timer mode (guessing removed).
+2. Red `XX:XX` placeholder while waiting for confirmed server timing.
+3. F8 now performs a live timer sync poll (no test phase cycling).
+4. Debug logging controls documented and defaulted off.
 
 ---
 
@@ -64,6 +78,7 @@ All settings are in `StarRuptureTimer.ini`.
 | Key | Default | Description |
 |---|---|---|
 | `Enabled` | `true` | Set to `false` to hide the overlay without unloading the plugin |
+| `DebugMode` | `false` | Set to `true` to write debug logs to `starrupturetimer.log` |
 
 ### [Display]
 
@@ -132,11 +147,23 @@ B=210
 
 ---
 
-## Testing the Overlay (F8)
+## Live Sync Key (F8)
 
-Press **F8** in-game to cycle through all five phases for visual testing.  
-This lets you check colours, size, and position without waiting for a real rupture event.  
-F8 only changes the display — it has no effect on the actual game.
+Press **F8** in-game to run an immediate live sync poll of server timer data.  
+F8 does not cycle fake/test phases in v1.1.
+
+---
+
+## Debug Logging
+
+When `DebugMode=true`, the plugin writes `starrupturetimer.log` next to the loaded DLL (game plugins folder).
+
+Typical entries include:
+1. Plugin startup / ready lines
+2. F8 sync snapshots (`F8_SYNC`)
+3. Automatic phase/timer sync diagnostics
+
+Default is `DebugMode=false`, so no debug log file is written unless you enable it.
 
 ---
 

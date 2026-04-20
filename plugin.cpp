@@ -20,6 +20,7 @@
 #include <cmath>
 #include <algorithm>
 #include <mutex>
+#include <cstdarg>
 
 // ---------------------------------------------------------------------------
 //  Plugin identity
@@ -28,9 +29,69 @@
 static IPluginSelf* g_self = nullptr;
 IPluginSelf* GetSelf() { return g_self; }
 
+static std::mutex g_logFileMutex;
+static char       g_logFilePath[MAX_PATH] = { 0 };
+static bool       g_debugModeEnabled = false;
+
+static void ResolveLogFilePath()
+{
+    if (g_logFilePath[0] != '\0')
+        return;
+
+    HMODULE module = nullptr;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&ResolveLogFilePath),
+            &module)) {
+        char dllPath[MAX_PATH] = { 0 };
+        if (GetModuleFileNameA(module, dllPath, (DWORD)sizeof(dllPath)) > 0) {
+            char* slash = strrchr(dllPath, '\\');
+            if (slash) {
+                *slash = '\0';
+                snprintf(g_logFilePath, sizeof(g_logFilePath), "%s\\starrupturetimer.log", dllPath);
+                return;
+            }
+        }
+    }
+
+    // Fallback if DLL path resolution fails.
+    snprintf(g_logFilePath, sizeof(g_logFilePath), "starrupturetimer.log");
+}
+
+static void AppendDebugLog(const char* fmt, ...)
+{
+    if (!g_debugModeEnabled)
+        return;
+
+    ResolveLogFilePath();
+
+    char msg[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+
+    char line[1200];
+    snprintf(line, sizeof(line),
+        "%04u-%02u-%02u %02u:%02u:%02u.%03u %s\n",
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+        msg);
+
+    std::lock_guard<std::mutex> lk(g_logFileMutex);
+    FILE* f = nullptr;
+    if (fopen_s(&f, g_logFilePath, "a") == 0 && f) {
+        fputs(line, f);
+        fclose(f);
+    }
+}
+
 static PluginInfo s_info = {
     "StarRuptureTimer",
-    "1.0.0",
+    "1.1.0",
     "Juntoaxx",
     "HUD overlay showing the current Arcadia rupture phase and countdown.",
     PLUGIN_INTERFACE_VERSION
@@ -97,6 +158,10 @@ static const ConfigEntry k_configEntries[] = {
     // Set Enabled=false to completely hide the overlay without unloading the plugin.
     { "General", "Enabled", ConfigValueType::Boolean, "true",
       "true = overlay visible | false = overlay hidden" },
+
+        // DebugMode controls whether starrupturetimer.log is created/written.
+        { "General", "DebugMode", ConfigValueType::Boolean, "false",
+            "true = write debug log file | false = no debug log" },
 
     // ── Display ──────────────────────────────────────────────────────────────
     // Alpha controls how opaque the overlay is.  0 = invisible, 100 = fully solid.
@@ -172,6 +237,7 @@ static const ConfigEntry k_configEntries[] = {
     { "Colors.Stabilizing", "R",      ConfigValueType::Integer, "100", "Custom red   0-255 (ignored when Preset is 1-32)" },
     { "Colors.Stabilizing", "G",      ConfigValueType::Integer, "155", "Custom green 0-255 (ignored when Preset is 1-32)" },
     { "Colors.Stabilizing", "B",      ConfigValueType::Integer, "165", "Custom blue  0-255 (ignored when Preset is 1-32)" },
+
 };
 static const ConfigSchema k_schema = { k_configEntries, sizeof(k_configEntries) / sizeof(k_configEntries[0]) };
 
@@ -186,11 +252,18 @@ struct Phase {
 };
 
 static Phase k_unknown     = { "Rupture Timer",    0.2f, 0.8f, 0.8f,    0.f };
-static Phase k_stable      = { "Arcadia Stable",   0.12f, 0.77f, 0.82f, 3120.f };
-static Phase k_incoming    = { "Rupture Incoming", 0.86f, 0.67f, 0.16f,   30.f };
-static Phase k_burning     = { "Arcadia Burning",  0.86f, 0.27f, 0.12f,   30.f };
+static Phase k_stable      = { "Arcadia Stable",   0.12f, 0.77f, 0.82f, 2400.f };
+static Phase k_incoming    = { "Rupture Incoming", 0.86f, 0.67f, 0.16f,   10.f };
+static Phase k_burning     = { "Arcadia Burning",  0.86f, 0.27f, 0.12f,   90.f };
 static Phase k_cooling     = { "Arcadia Cooling",  0.16f, 0.55f, 0.82f,   60.f };
-static Phase k_stabilizing = { "Stabilizing",      0.39f, 0.61f, 0.65f,  600.f };
+static Phase k_stabilizing = { "Stabilizing",      0.39f, 0.61f, 0.65f,  675.f };
+
+static float GetGuessCycleSeconds()
+{
+    return k_stable.defaultSecs + k_incoming.defaultSecs +
+           k_burning.defaultSecs + k_cooling.defaultSecs +
+           k_stabilizing.defaultSecs;
+}
 
 // ---------------------------------------------------------------------------
 //  Display config
@@ -246,7 +319,26 @@ static void LoadDisplayConfig()
     g_display = d;
 }
 
-static void OnConfigChanged(const char*, const char*, const char*) { LoadDisplayConfig(); }
+static void OnConfigChanged(const char*, const char*, const char*)
+{
+    LoadDisplayConfig();
+
+    if (!g_self || !g_self->config)
+        return;
+
+    bool newDebugMode = g_self->config->ReadBool(g_self, "General", "DebugMode", false);
+    bool wasEnabled = g_debugModeEnabled;
+    g_debugModeEnabled = newDebugMode;
+
+    if (g_debugModeEnabled && !wasEnabled) {
+        ResolveLogFilePath();
+        AppendDebugLog("DEBUG_MODE_ENABLED logPath=%s", g_logFilePath);
+    } else if (!g_debugModeEnabled && wasEnabled) {
+        ResolveLogFilePath();
+        AppendDebugLog("DEBUG_MODE_DISABLED");
+    }
+
+}
 
 // ---------------------------------------------------------------------------
 //  Timer state
@@ -269,14 +361,332 @@ static std::mutex g_timerMutex;
 
 static SDK::UWorld* g_world = nullptr;
 
-static constexpr float COOLING_DURATION     = 60.f;
-static constexpr float STABILIZING_DURATION = 600.f;
+enum class PhaseId {
+    Unknown = -1,
+    Stable = 0,
+    Incoming = 1,
+    Burning = 2,
+    Cooling = 3,
+    Stabilizing = 4,
+};
+
+static PhaseId PhaseIdFromPtr(const Phase* p)
+{
+    if (p == &k_stable)      return PhaseId::Stable;
+    if (p == &k_incoming)    return PhaseId::Incoming;
+    if (p == &k_burning)     return PhaseId::Burning;
+    if (p == &k_cooling)     return PhaseId::Cooling;
+    if (p == &k_stabilizing) return PhaseId::Stabilizing;
+    return PhaseId::Unknown;
+}
+
+static const char* PhaseNameFromId(PhaseId id)
+{
+    switch (id) {
+        case PhaseId::Stable: return k_stable.name;
+        case PhaseId::Incoming: return k_incoming.name;
+        case PhaseId::Burning: return k_burning.name;
+        case PhaseId::Cooling: return k_cooling.name;
+        case PhaseId::Stabilizing: return k_stabilizing.name;
+        default: return k_unknown.name;
+    }
+}
+
+static float PhaseDurationFromId(PhaseId id)
+{
+    switch (id) {
+        case PhaseId::Stable: return k_stable.defaultSecs;
+        case PhaseId::Incoming: return k_incoming.defaultSecs;
+        case PhaseId::Burning: return k_burning.defaultSecs;
+        case PhaseId::Cooling: return k_cooling.defaultSecs;
+        case PhaseId::Stabilizing: return k_stabilizing.defaultSecs;
+        default: return 0.f;
+    }
+}
+
+static const Phase* PhasePtrFromId(PhaseId id)
+{
+    switch (id) {
+        case PhaseId::Stable: return &k_stable;
+        case PhaseId::Incoming: return &k_incoming;
+        case PhaseId::Burning: return &k_burning;
+        case PhaseId::Cooling: return &k_cooling;
+        case PhaseId::Stabilizing: return &k_stabilizing;
+        default: return &k_unknown;
+    }
+}
+
+static PhaseId NextPhaseId(PhaseId id)
+{
+    switch (id) {
+        case PhaseId::Stable: return PhaseId::Incoming;
+        case PhaseId::Incoming: return PhaseId::Burning;
+        case PhaseId::Burning: return PhaseId::Cooling;
+        case PhaseId::Cooling: return PhaseId::Stabilizing;
+        case PhaseId::Stabilizing: return PhaseId::Stable;
+        default: return PhaseId::Stable;
+    }
+}
+
+struct PredictiveSyncState {
+    bool    active = false;
+    PhaseId phase = PhaseId::Unknown;
+    float   remaining = 0.f;
+};
+static PredictiveSyncState g_predict;
+static std::mutex          g_predictMutex;
+
+struct SyncLogState {
+    bool    sawInitial = false;
+    PhaseId phase = PhaseId::Unknown;
+    int     lastPeriodicSecond = -1;
+    bool    loggedLastSecond = false;
+};
+static SyncLogState g_syncLog;
+static std::mutex   g_syncLogMutex;
+static bool         g_lastPollUsedPrediction = false;
+
+struct PollDebugState {
+    bool   valid            = false;
+    double serverTime       = 0.0;
+    float  rawNextTime      = 0.f;
+    int    rawNextPhase     = -1;
+    float  rawRemaining     = 0.f;
+    float  mappedRemaining  = 0.f;
+    const char* mappedPhase = "<none>";
+};
+static PollDebugState g_pollDebug;
+static std::mutex     g_pollDebugMutex;
+
+static void AdvancePredictive(float delta)
+{
+    std::lock_guard<std::mutex> lk(g_predictMutex);
+    if (!g_predict.active || delta <= 0.f) return;
+
+    g_predict.remaining = std::max(0.f, g_predict.remaining - delta);
+    while (g_predict.remaining <= 0.0001f) {
+        g_predict.phase = NextPhaseId(g_predict.phase);
+        float dur = PhaseDurationFromId(g_predict.phase);
+        if (dur <= 0.f) {
+            g_predict.active = false;
+            break;
+        }
+        g_predict.remaining += dur;
+    }
+}
+
+static void UpdatePredictiveFromLive(const Phase* phase, float remaining)
+{
+    PhaseId id = PhaseIdFromPtr(phase);
+    if (id == PhaseId::Unknown || remaining <= 0.f) return;
+
+    std::lock_guard<std::mutex> lk(g_predictMutex);
+    g_predict.active = true;
+    g_predict.phase = id;
+    g_predict.remaining = remaining;
+}
+
+static bool TryGetPredictive(const Phase** outPhase, float* outRemaining)
+{
+    std::lock_guard<std::mutex> lk(g_predictMutex);
+    if (!g_predict.active || g_predict.phase == PhaseId::Unknown || g_predict.remaining <= 0.f)
+        return false;
+    *outPhase = PhasePtrFromId(g_predict.phase);
+    *outRemaining = g_predict.remaining;
+    return true;
+}
+
+static bool GuessTimerFromServerCycle(const Phase* phase, double serverTime, float* outRemaining,
+    float* outCycleElapsed, float* outCycleRemaining)
+{
+    float cycleSeconds = GetGuessCycleSeconds();
+    if (!phase || !outRemaining || serverTime <= 0.0 || cycleSeconds <= 0.f)
+        return false;
+
+    PhaseId id = PhaseIdFromPtr(phase);
+    if (id == PhaseId::Unknown)
+        return false;
+
+    double cycle = (double)cycleSeconds;
+    double elapsed = std::fmod(serverTime, cycle);
+    if (elapsed < 0.0)
+        elapsed += cycle;
+
+    float cycleElapsed = (float)elapsed;
+    float cycleRemaining = std::max(0.f, cycleSeconds - cycleElapsed);
+    if (cycleRemaining <= 0.01f)
+        cycleRemaining = cycleSeconds;
+
+    {
+        std::lock_guard<std::mutex> lk(g_predictMutex);
+        g_predict.active = true;
+        g_predict.phase = id;
+        g_predict.remaining = cycleRemaining;
+    }
+
+    *outRemaining = cycleRemaining;
+    if (outCycleElapsed) *outCycleElapsed = cycleElapsed;
+    if (outCycleRemaining) *outCycleRemaining = cycleRemaining;
+    return true;
+}
+
+static float EstimateRemainingFromPhaseName(PhaseId phaseId)
+{
+    switch (phaseId) {
+        case PhaseId::Stable:
+            return k_stable.defaultSecs;
+        case PhaseId::Incoming:
+            return k_incoming.defaultSecs;
+        case PhaseId::Burning:
+            return k_burning.defaultSecs;
+        case PhaseId::Cooling:
+            return k_cooling.defaultSecs;
+        case PhaseId::Stabilizing:
+            return k_stabilizing.defaultSecs;
+        default:
+            return 0.f;
+    }
+}
+
+static bool GuessTimerFromPhaseName(const Phase* phase, float* outRemaining)
+{
+    if (!phase || !outRemaining) return false;
+
+    PhaseId id = PhaseIdFromPtr(phase);
+    if (id == PhaseId::Unknown) return false;
+
+    float predicted = EstimateRemainingFromPhaseName(id);
+    if (predicted <= 0.f) return false;
+
+    std::lock_guard<std::mutex> lk(g_predictMutex);
+    g_predict.active = true;
+    g_predict.phase = id;
+    g_predict.remaining = predicted;
+
+    *outRemaining = predicted;
+    return true;
+}
+
+static bool GuessTimerFromState(const Phase** outPhase, float* outRemaining, const char** outSource)
+{
+    TimerState ts;
+    {
+        std::lock_guard<std::mutex> lk(g_timerMutex);
+        ts = g_state;
+    }
+
+    if (ts.hasData && ts.phase && ts.remaining > 0.f) {
+        *outPhase = ts.phase;
+        *outRemaining = ts.remaining;
+        if (outSource) *outSource = "state";
+        return true;
+    }
+
+    if (TryGetPredictive(outPhase, outRemaining)) {
+        if (outSource) *outSource = "predictive";
+        return true;
+    }
+
+    if (ts.phase && GuessTimerFromPhaseName(ts.phase, outRemaining)) {
+        *outPhase = ts.phase;
+        if (outSource) *outSource = "phase_name";
+        return true;
+    }
+
+    return false;
+}
+
+static void MaybeLogSyncSample()
+{
+    TimerState ts;
+    PollDebugState pd;
+    {
+        std::lock_guard<std::mutex> lk(g_timerMutex);
+        ts = g_state;
+    }
+    {
+        std::lock_guard<std::mutex> dlk(g_pollDebugMutex);
+        pd = g_pollDebug;
+    }
+    if (!ts.hasData || !ts.phase) return;
+
+    PhaseId id = PhaseIdFromPtr(ts.phase);
+    int remSec = (int)std::ceil(std::max(0.f, ts.remaining));
+
+    std::lock_guard<std::mutex> lk(g_syncLogMutex);
+
+    if (!g_syncLog.sawInitial) {
+        g_syncLog.sawInitial = true;
+        g_syncLog.phase = id;
+        g_syncLog.lastPeriodicSecond = -1;
+        g_syncLog.loggedLastSecond = (remSec <= 1);
+        AppendDebugLog("SYNC_INIT phase=%s rem=%.2f server=%.2f source=%s",
+            ts.phase->name,
+            ts.remaining,
+            pd.valid ? pd.serverTime : -1.0,
+            g_lastPollUsedPrediction ? "predicted" : "server");
+    }
+
+    if (id != g_syncLog.phase) {
+        g_syncLog.phase = id;
+        g_syncLog.lastPeriodicSecond = -1;
+        g_syncLog.loggedLastSecond = (remSec <= 1);
+        AppendDebugLog("PHASE_START phase=%s rem=%.2f server=%.2f source=%s",
+            PhaseNameFromId(id),
+            ts.remaining,
+            pd.valid ? pd.serverTime : -1.0,
+            g_lastPollUsedPrediction ? "predicted" : "server");
+    }
+
+    if (remSec > 1 && (remSec % 5) == 0 && remSec != g_syncLog.lastPeriodicSecond) {
+        g_syncLog.lastPeriodicSecond = remSec;
+        AppendDebugLog("PHASE_TICK_5S phase=%s rem=%.2f server=%.2f source=%s",
+            PhaseNameFromId(id),
+            ts.remaining,
+            pd.valid ? pd.serverTime : -1.0,
+            g_lastPollUsedPrediction ? "predicted" : "server");
+    }
+
+    if (remSec <= 1 && !g_syncLog.loggedLastSecond) {
+        g_syncLog.loggedLastSecond = true;
+        AppendDebugLog("PHASE_LAST_SECOND phase=%s rem=%.2f server=%.2f source=%s",
+            PhaseNameFromId(id),
+            ts.remaining,
+            pd.valid ? pd.serverTime : -1.0,
+            g_lastPollUsedPrediction ? "predicted" : "server");
+    }
+}
+
+static SDK::UWorld* ResolveWaveWorld()
+{
+    auto hasWaveTimer = [](SDK::UWorld* w) -> bool {
+        if (!w || !w->GameState) return false;
+        auto* gs = static_cast<SDK::ACrGameStateBase*>(w->GameState);
+        return gs && gs->WaveTimerActor;
+    };
+
+    if (hasWaveTimer(g_world))
+        return g_world;
+
+    SDK::UWorld* current = SDK::UWorld::GetWorld();
+    if (hasWaveTimer(current)) {
+        g_world = current;
+        return current;
+    }
+
+    // Keep a non-null candidate around so the next poll can recover quickly.
+    if (!g_world && current)
+        g_world = current;
+
+    return nullptr;
+}
+
 static float s_phase3StartRemaining = -1.f;
 static int   s_prevNextPhase        = -1;
 
 static void PollTimerState()
 {
-    SDK::UWorld* world = g_world ? g_world : SDK::UWorld::GetWorld();
+    SDK::UWorld* world = ResolveWaveWorld();
     if (!world) return;
 
     auto* gameState = static_cast<SDK::ACrGameStateBase*>(world->GameState);
@@ -284,9 +694,11 @@ static void PollTimerState()
 
     SDK::ACrWaveTimerActor* timer = gameState->WaveTimerActor;
     double serverTime             = gameState->GetServerWorldTimeSeconds();
-    float  unclamped              = timer->NextTime - static_cast<float>(serverTime);
+    float  rawNextTime            = timer->NextTime;
+    int    rawNextPhase           = (int)timer->NextPhase;
+    float  unclamped              = rawNextTime - static_cast<float>(serverTime);
     float  nextTimeRemaining      = std::max(0.f, unclamped);
-    int    nextPhase              = (int)timer->NextPhase;
+    int    nextPhase              = rawNextPhase;
 
     if (nextPhase != s_prevNextPhase) {
         if (nextPhase == 3) s_phase3StartRemaining = nextTimeRemaining;
@@ -309,14 +721,16 @@ static void PollTimerState()
             announced = (s_phase3StartRemaining > 0.f) ? s_phase3StartRemaining : k_burning.defaultSecs;
             break;
         case 3: {
+            float coolingDuration = k_cooling.defaultSecs;
+            float stabilizingDuration = k_stabilizing.defaultSecs;
             float boundary = (s_phase3StartRemaining > 0.f)
-                ? (s_phase3StartRemaining - COOLING_DURATION)
-                : STABILIZING_DURATION;
+                ? (s_phase3StartRemaining - coolingDuration)
+                : stabilizingDuration;
             if (nextTimeRemaining > boundary) {
-                phase = &k_cooling; remaining = nextTimeRemaining - boundary; announced = COOLING_DURATION;
+                phase = &k_cooling; remaining = nextTimeRemaining - boundary; announced = coolingDuration;
             } else {
                 phase = &k_stabilizing; remaining = nextTimeRemaining;
-                announced = boundary > 0.f ? boundary : STABILIZING_DURATION;
+                announced = boundary > 0.f ? boundary : stabilizingDuration;
             }
             break;
         }
@@ -325,12 +739,39 @@ static void PollTimerState()
             break;
     }
 
-    if (phase) {
+    bool liveTrusted = (nextTimeRemaining > 0.01f) && (phase != &k_unknown);
+    g_lastPollUsedPrediction = false;
+
+    if (phase && liveTrusted) {
         std::lock_guard<std::mutex> lk(g_timerMutex);
         g_state.phase     = phase;
         g_state.remaining = remaining;
         g_state.announced = (announced > 0.f) ? announced : phase->defaultSecs;
         g_state.hasData   = true;
+
+        std::lock_guard<std::mutex> dlk(g_pollDebugMutex);
+        g_pollDebug.valid            = true;
+        g_pollDebug.serverTime       = serverTime;
+        g_pollDebug.rawNextTime      = rawNextTime;
+        g_pollDebug.rawNextPhase     = rawNextPhase;
+        g_pollDebug.rawRemaining     = nextTimeRemaining;
+        g_pollDebug.mappedRemaining  = remaining;
+        g_pollDebug.mappedPhase      = phase->name;
+    } else {
+        std::lock_guard<std::mutex> lk(g_timerMutex);
+        g_state.phase     = &k_unknown;
+        g_state.remaining = 0.f;
+        g_state.announced = 0.f;
+        g_state.hasData   = false;
+
+        std::lock_guard<std::mutex> dlk(g_pollDebugMutex);
+        g_pollDebug.valid            = true;
+        g_pollDebug.serverTime       = serverTime;
+        g_pollDebug.rawNextTime      = rawNextTime;
+        g_pollDebug.rawNextPhase     = rawNextPhase;
+        g_pollDebug.rawRemaining     = nextTimeRemaining;
+        g_pollDebug.mappedRemaining  = 0.f;
+        g_pollDebug.mappedPhase      = k_unknown.name;
     }
 }
 
@@ -348,17 +789,27 @@ static void OnTick(float delta)
         s_pollAccum = 0.f;
         PollTimerState();
     }
+
+    MaybeLogSyncSample();
 }
 
 static void OnAnyWorldBeginPlay(SDK::UWorld* world, const char* worldName)
 {
-    if (strstr(worldName, "ChimeraMain")) {
+    if (!world) return;
+
+    auto* gs = static_cast<SDK::ACrGameStateBase*>(world->GameState);
+    if (gs && gs->WaveTimerActor) {
         g_world                = world;
         s_prevNextPhase        = -1;
         s_phase3StartRemaining = -1.f;
-        LOG_INFO("RuptureTimer: game world active — %s", worldName);
-    } else {
-        g_world = nullptr;
+        PollTimerState();
+        LOG_INFO("RuptureTimer: wave world active — %s", worldName ? worldName : "<unknown>");
+        return;
+    }
+
+    if (strstr(worldName, "ChimeraMain")) {
+        g_world = world;
+        LOG_DEBUG("RuptureTimer: candidate world seen — %s", worldName);
     }
 }
 
@@ -368,17 +819,51 @@ static void OnAnyWorldBeginPlay(SDK::UWorld* world, const char* worldName)
 
 static void OnTestKey(EModKey, EModKeyEvent)
 {
-    static const Phase* s_cycle[] = {
-        &k_stable, &k_incoming, &k_burning, &k_cooling, &k_stabilizing
-    };
-    static int s_idx = 0;
-    const Phase* p = s_cycle[s_idx++ % 5];
+    PollTimerState();
+
+    PollDebugState pd;
+    {
+        std::lock_guard<std::mutex> dlk(g_pollDebugMutex);
+        pd = g_pollDebug;
+    }
+
     std::lock_guard<std::mutex> lk(g_timerMutex);
-    g_state.phase     = p;
-    g_state.remaining = p->defaultSecs;
-    g_state.announced = p->defaultSecs;
-    g_state.hasData   = true;
-    LOG_INFO("RuptureTimer: [TEST] %s", p->name);
+    if (g_state.hasData && g_state.phase) {
+        LOG_INFO("RuptureTimer: [SYNC] %s %02d:%02d",
+            g_state.phase->name,
+            (int)g_state.remaining / 60,
+            (int)g_state.remaining % 60);
+        if (pd.valid) {
+            AppendDebugLog(
+                "F8_SYNC hasData=1 phase=%s rem=%.2f rawPhase=%d rawNextTime=%.2f server=%.2f rawRem=%.2f mappedPhase=%s mappedRem=%.2f",
+                g_state.phase->name,
+                g_state.remaining,
+                pd.rawNextPhase,
+                pd.rawNextTime,
+                pd.serverTime,
+                pd.rawRemaining,
+                pd.mappedPhase,
+                pd.mappedRemaining);
+        } else {
+            AppendDebugLog("F8_SYNC hasData=1 phase=%s rem=%.2f pollDebug=none",
+                g_state.phase->name,
+                g_state.remaining);
+        }
+    } else {
+        LOG_INFO("RuptureTimer: [SYNC] no timer data yet");
+        if (pd.valid) {
+            AppendDebugLog(
+                "F8_SYNC hasData=0 rawPhase=%d rawNextTime=%.2f server=%.2f rawRem=%.2f mappedPhase=%s mappedRem=%.2f",
+                pd.rawNextPhase,
+                pd.rawNextTime,
+                pd.serverTime,
+                pd.rawRemaining,
+                pd.mappedPhase,
+                pd.mappedRemaining);
+        } else {
+            AppendDebugLog("F8_SYNC hasData=0 pollDebug=none");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -444,67 +929,47 @@ static void OnPostRender(void* hudPtr)
         hud->Canvas->K2_DrawLine(a2, b2, thick, col);
     };
 
-    // ── White outer border (4 edges) ─────────────────────────────────────────
-    auto borderCol = LC(1.f, 1.f, 1.f, a * 0.55f);
-    Line(R(-hw, -hh), R( hw, -hh), 2.f, borderCol);  // top
-    Line(R(-hw,  hh), R( hw,  hh), 2.f, borderCol);  // bottom
-    Line(R(-hw, -hh), R(-hw,  hh), 2.f, borderCol);  // left
-    Line(R( hw, -hh), R( hw,  hh), 2.f, borderCol);  // right
+    bool waitingServer = !ts.hasData;
+    if (waitingServer) {
+        ts.phase = &k_unknown;
+        ts.remaining = 0.f;
+    }
 
-    // ── Phase color accent bar (3px, just inside top border) ─────────────────
-    Line(R(-hw + 2.f, -hh + 3.f), R(hw - 2.f, -hh + 3.f), 3.f,
-         LC(ts.phase->r, ts.phase->g, ts.phase->b, a * 0.9f));
+    // Panel text layout — phase name on top, countdown below it
+    float textPad    = pad;
+    float textDy     = -hh + 10.f;
+    float lineHeight = 24.f * dc.fontScale;
 
     // ── Phase name text ───────────────────────────────────────────────────────
     {
         wchar_t wbuf[64];
         AsciiToWide(ts.phase->name, wbuf, 64);
         SDK::FString fs(wbuf);
-        auto pos = R(-hw + pad, -hh + 10.f);
+        auto pos = R(-hw + textPad, textDy);
         hud->DrawText(fs, LC(ts.phase->r, ts.phase->g, ts.phase->b, a),
                       (float)pos.X, (float)pos.Y, nullptr, dc.fontScale, false);
     }
 
-    if (!ts.hasData) return;
-
-    // ── Countdown text ────────────────────────────────────────────────────────
+    // ── Countdown text (centered under phase name) ────────────────────────────
     {
         char    cbuf[8];
-        int     mins = (int)ts.remaining / 60;
-        int     secs = (int)ts.remaining % 60;
-        snprintf(cbuf, sizeof(cbuf), "%02d:%02d", mins, secs);
+        if (waitingServer) {
+            snprintf(cbuf, sizeof(cbuf), "XX:XX");
+        } else {
+            int mins = (int)ts.remaining / 60;
+            int secs = (int)ts.remaining % 60;
+            snprintf(cbuf, sizeof(cbuf), "%02d:%02d", mins, secs);
+        }
         wchar_t wbuf[16];
         AsciiToWide(cbuf, wbuf, 16);
         SDK::FString fs(wbuf);
-        auto pos = R(hw - 52.f, -hh + 10.f);
-        hud->DrawText(fs, LC(ts.phase->r, ts.phase->g, ts.phase->b, a * 0.85f),
+        auto pos = R(-hw + textPad, textDy + lineHeight);
+        SDK::FLinearColor timerColor = waitingServer
+            ? LC(0.9f, 0.2f, 0.2f, a * 0.95f)
+            : LC(ts.phase->r, ts.phase->g, ts.phase->b, a * 0.85f);
+        hud->DrawText(fs, timerColor,
                       (float)pos.X, (float)pos.Y, nullptr, dc.fontScale, false);
     }
-
-    // ── Progress bar ──────────────────────────────────────────────────────────
-    // Bar center is 6px below the panel center (py+34 vs panel center at py+28)
-    float barDy  = 6.f;
-    float barHW  = hw - pad;  // bar half-width
-    float barTW  = barHW * 2.f;
-    float frac   = (ts.announced > 0.f) ? std::min(1.f, ts.remaining / ts.announced) : 1.f;
-
-    // Empty track
-    Line(R(-barHW, barDy), R(barHW, barDy), barH, LC(0.08f, 0.10f, 0.12f, a * 0.8f));
-
-    // Filled portion (left-aligned: from -barHW to -barHW + barTW*frac)
-    if (frac > 0.f) {
-        float fillEnd = -barHW + barTW * frac;
-        Line(R(-barHW, barDy), R(fillEnd, barDy), barH,
-             LC(ts.phase->r, ts.phase->g, ts.phase->b, a * 0.85f));
-    }
-
-    // Bar border
-    float bh = barH * 0.5f;
-    auto barBorder = LC(1.f, 1.f, 1.f, a * 0.40f);
-    Line(R(-barHW, barDy - bh), R( barHW, barDy - bh), 1.f, barBorder);  // top
-    Line(R(-barHW, barDy + bh), R( barHW, barDy + bh), 1.f, barBorder);  // bottom
-    Line(R(-barHW, barDy - bh), R(-barHW, barDy + bh), 1.f, barBorder);  // left
-    Line(R( barHW, barDy - bh), R( barHW, barDy + bh), 1.f, barBorder);  // right
 }
 
 #endif // MODLOADER_CLIENT_BUILD
@@ -523,9 +988,17 @@ __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     LOG_INFO("RuptureTimer: init v%s", self->version);
 
     self->config->InitializeFromSchema(self, &k_schema);
+    g_debugModeEnabled = self->config->ReadBool(self, "General", "DebugMode", false);
+
+    if (g_debugModeEnabled) {
+        ResolveLogFilePath();
+        AppendDebugLog("PLUGIN_INIT version=%s logPath=%s", self->version ? self->version : "<null>", g_logFilePath);
+    }
 
     if (!self->config->ReadBool(self, "General", "Enabled", true)) {
         LOG_INFO("RuptureTimer: disabled by config");
+        if (g_debugModeEnabled)
+            AppendDebugLog("PLUGIN_INIT disabled_by_config=1");
         return true;
     }
 
@@ -544,7 +1017,9 @@ __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     if (self->hooks->Input)
         self->hooks->Input->RegisterKeybind(EModKey::F8, EModKeyEvent::Pressed, &OnTestKey);
 
-    LOG_INFO("RuptureTimer: ready (F8 = cycle test phases)");
+    LOG_INFO("RuptureTimer: ready (F8 = live timer sync)");
+    if (g_debugModeEnabled)
+        AppendDebugLog("PLUGIN_READY f8_mode=live_sync");
 #endif
 
     return true;
@@ -572,6 +1047,7 @@ __declspec(dllexport) void PluginShutdown()
 #endif
 
     g_self = nullptr;
+    g_debugModeEnabled = false;
 }
 
 } // extern "C"
