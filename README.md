@@ -2,226 +2,158 @@
 
 **Author:** Juntoaxx  
 **Game:** Star Rupture  
-**Version:** 1.1.0  
-**License:** Public Domain — free to use, modify, and redistribute. No ownership claimed.
+**Version:** 1.3.0  
+**License:** Public Domain - free to use, modify, and redistribute.
 
 ---
 
-## What It Does
+## Overview
 
-StarRuptureTimer adds a lightweight HUD overlay to Star Rupture that shows the current **Arcadia rupture phase** and a live **countdown timer** — so you always know exactly how long until the next phase change without having to watch the sky.
+StarRuptureTimer adds a lightweight HUD overlay that shows:
+1. Current Arcadia rupture phase
+2. Countdown to the next phase change
 
-In v1.1, timer display is **server-authoritative only**:
-- The countdown is shown only when confirmed server timer values are valid.
-- While waiting for valid server timing, the timer shows **`XX:XX` in red**.
-- No predictive/guess timer fallback is used.
-
-### Phases Tracked
-
-| Phase | Default Colour | Description |
-|---|---|---|
-| Arcadia Stable | Teal | Safe period between waves |
-| Rupture Incoming | Amber | Wave is approaching |
-| Arcadia Burning | Orange-Red | Active rupture wave |
-| Arcadia Cooling | Blue | Wave receding |
-| Stabilizing | Teal-Grey | Regrowth after the wave |
-
-The overlay displays the phase name and a MM:SS countdown, styled to match the game's sci-fi HUD aesthetic.
+Timer behavior is server-authoritative:
+1. Timer is shown only when trusted server values are available.
+2. While waiting for sync, the timer shows `XX:XX` in red.
+3. Before sync, the phase label uses the Stable color preset so color changes are visible immediately.
 
 ---
 
-## What's New in v1.1
+## Current Features (v1.3)
 
-1. Server-only timer mode (guessing removed).
-2. Red `XX:XX` placeholder while waiting for confirmed server timing.
-3. F8 now performs a live timer sync poll (no test phase cycling).
-4. Debug logging controls documented and defaulted off.
+1. Live rupture phase + countdown HUD.
+2. F8 live sync poll.
+3. F8 dismisses active alarm for the current phase cycle.
+4. Repeating system-beep alarm (no WAV file dependency).
+5. Preset-only phase colors (`Preset=1-32`).
+6. Debug logging toggle (`DebugMode`) with log file next to the DLL.
 
 ---
 
 ## Requirements
 
-**This mod requires the AlienMod Loader.**  
-You must install it before this mod will work.
+This mod requires AlienMod Loader.
 
-- **AlienMod Loader** by AlienXAXS  
-  → https://www.nexusmods.com/starrupture/mods/89  
-  *(or search "AlienMod Loader" on the Star Rupture Nexus page)*
+- AlienMod Loader: https://www.nexusmods.com/starrupture/mods/89
 
-Without the mod loader installed and running, `StarRuptureTimer.dll` will not be loaded by the game.
+Without the loader, `StarRuptureTimer.dll` will not be loaded.
 
 ---
 
 ## Installation
 
-1. Install the **AlienMod Loader** if you haven't already (see link above).
-2. Download `StarRuptureTimer.dll` from the Files tab on this page.
-3. Place `StarRuptureTimer.dll` in:
+1. Install AlienMod Loader.
+2. Copy `StarRuptureTimer.dll` to:
    ```
    steamapps/common/StarRupture/StarRupture/Binaries/Win64/Plugins/
    ```
-4. Launch the game. On first run the mod loader generates a config file at:
+3. Launch the game.
+4. The config file is generated at:
    ```
    steamapps/common/StarRupture/StarRupture/Binaries/Win64/Plugins/config/StarRuptureTimer.ini
    ```
-   Edit this file to customise the overlay (see Configuration below).
 
 ---
 
 ## Configuration
 
-All settings are in `StarRuptureTimer.ini`.  
-**Changes take effect immediately** — you do not need to restart the game.
+All settings are in `StarRuptureTimer.ini`. Changes apply live.
 
 ### [General]
 
 | Key | Default | Description |
 |---|---|---|
-| `Enabled` | `true` | Set to `false` to hide the overlay without unloading the plugin |
-| `DebugMode` | `false` | Set to `true` to write debug logs to `starrupturetimer.log` |
+| `Enabled` | `true` | Enables or disables the overlay |
+| `DebugMode` | `false` | Enables debug logging to `starrupturetimer.log` |
 
 ### [Display]
 
 | Key | Default | Description |
 |---|---|---|
-| `Alpha` | `80` | Overlay opacity. `0` = invisible, `100` = fully solid |
-| `Scale` | `50` | Panel width. `0` = 200 px (narrowest), `100` = 300 px (widest) |
-| `FontSize` | `1` | Text size. `1` = normal, `10` = double size |
-| `PosX` | `-1` | Panel left edge in pixels. `-1` = auto (lower-left corner) |
-| `PosY` | `-1` | Panel top edge in pixels. `-1` = auto (lower-left corner) |
-| `Rotation` | `0` | Tilt angle. `-90` = counter-clockwise, `0` = flat, `90` = clockwise |
+| `Alpha` | `80` | Overlay opacity (`0-100`) |
+| `Scale` | `50` | Panel width scale (`0-100`) |
+| `FontSize` | `1` | Text size (`1-10`) |
+| `PosX` | `-1` | X position (`-1` = auto lower-left) |
+| `PosY` | `-1` | Y position (`-1` = auto lower-left) |
+| `Rotation` | `0` | Panel tilt (`-90` to `90`) |
 
-**Positioning examples for 1920x1080:**
-```ini
-; Lower-left (default)
-PosX=20
-PosY=1004
+### [Alarm]
 
-; Lower-right
-PosX=1650
-PosY=1004
+| Key | Default | Description |
+|---|---|---|
+| `Enabled` | `false` | Enables phase alarm |
+| `Phase` | `0` | Trigger phase (`0=Stable,1=Incoming,2=Burning,3=Cooling,4=Stabilizing`) |
+| `TriggerMinutes` | `5` | Minutes before phase end |
+| `TriggerSeconds` | `0` | Additional seconds before phase end |
+| `BeepIntervalMs` | `1000` | Delay between beeps (`100-5000`) |
 
-; Top-left
-PosX=20
-PosY=20
-```
+Alarm notes:
+1. Alarm repeats until dismissed with F8.
+2. Dismiss applies only to the current phase cycle.
 
-### [Colors.*] — Phase Colours
+### [Colors.*] Preset Colors
 
-Each phase has its own colour section: `Colors.Stable`, `Colors.Incoming`, `Colors.Burning`, `Colors.Cooling`, `Colors.Stabilizing`.
+Sections:
+1. `Colors.Stable`
+2. `Colors.Incoming`
+3. `Colors.Burning`
+4. `Colors.Cooling`
+5. `Colors.Stabilizing`
 
-**Option A — Use a preset colour (easiest):**  
-Set `Preset` to a number from the list below. The `R`, `G`, `B` values are ignored.
+Each section uses one key:
+- `Preset` (`1-32`)
 
-```ini
-[Colors.Stable]
-Preset=14   ; Teal
-```
-
-**Option B — Use a fully custom colour:**  
-Set `Preset=0` and enter your own `R`, `G`, `B` values (each 0-255).
-
+Example:
 ```ini
 [Colors.Stable]
-Preset=0
-R=30
-G=195
-B=210
+Preset=14
 ```
 
-### Colour Preset List
+Preset list:
 
-| # | Name | | # | Name | | # | Name |
-|---|---|---|---|---|---|---|---|
-| 1 | White | | 12 | Green | | 23 | Magenta |
-| 2 | LightGrey | | 13 | DarkGreen | | 24 | HotPink |
-| 3 | Grey | | 14 | Teal | | 25 | Pink |
-| 4 | DarkGrey | | 15 | Cyan | | 26 | Coral |
-| 5 | Black | | 16 | SkyBlue | | 27 | Salmon |
-| 6 | Red | | 17 | Blue | | 28 | Gold |
-| 7 | DarkRed | | 18 | DarkBlue | | 29 | Bronze |
-| 8 | Orange | | 19 | Navy | | 30 | Turquoise |
-| 9 | Amber | | 20 | Indigo | | 31 | Mint |
-| 10 | Yellow | | 21 | Purple | | 32 | Lavender |
-| 11 | Lime | | 22 | Violet | | | |
+| # | Name | # | Name | # | Name |
+|---|---|---|---|---|---|
+| 1 | White | 12 | Green | 23 | Magenta |
+| 2 | LightGrey | 13 | DarkGreen | 24 | HotPink |
+| 3 | Grey | 14 | Teal | 25 | Pink |
+| 4 | DarkGrey | 15 | Cyan | 26 | Coral |
+| 5 | Black | 16 | SkyBlue | 27 | Salmon |
+| 6 | Red | 17 | Blue | 28 | Gold |
+| 7 | DarkRed | 18 | DarkBlue | 29 | Bronze |
+| 8 | Orange | 19 | Navy | 30 | Turquoise |
+| 9 | Amber | 20 | Indigo | 31 | Mint |
+| 10 | Yellow | 21 | Purple | 32 | Lavender |
+| 11 | Lime | 22 | Violet |  |  |
 
 ---
 
-## Live Sync Key (F8)
+## F8 Behavior
 
-Press **F8** in-game to run an immediate live sync poll of server timer data.  
-F8 does not cycle fake/test phases in v1.1.
+Press F8 in-game to:
+1. Run an immediate live sync poll.
+2. Dismiss the active alarm (if one is currently sounding).
+
+## Enable Or Disable Alarm In-Game (F2)
+
+You can toggle the alarm without editing the INI manually:
+1. Press F2 in-game to open the mod loader menu.
+2. Open the Config tab.
+3. Select StarRuptureTimer.dll from the plugin list.
+4. Find Alarm > Enabled.
+5. Set it to true to enable the alarm, or false to disable it.
+6. Close the menu. Changes apply immediately.
 
 ---
 
 ## Debug Logging
 
-When `DebugMode=true`, the plugin writes `starrupturetimer.log` next to the loaded DLL (game plugins folder).
-
-Typical entries include:
-1. Plugin startup / ready lines
-2. F8 sync snapshots (`F8_SYNC`)
-3. Automatic phase/timer sync diagnostics
-
-Default is `DebugMode=false`, so no debug log file is written unless you enable it.
+When `DebugMode=true`, logs are written to `starrupturetimer.log` next to the loaded DLL.
 
 ---
 
-## Compatibility
+## Source
 
-- Tested on the local/listen-server version of Star Rupture (Early Access).
-- Works on dedicated servers using the ACrWaveTimerActor fallback.
-- Should remain compatible across game updates as long as the core game structures are unchanged.
+GitHub: https://github.com/juntoaxx/StarRuptureTimer
 
----
-
-## Credits & Sources
-
-- **AlienXAXS** — AlienMod Loader and the StarRupture Plugin SDK  
-  https://github.com/AlienXAXS/StarRupture-Plugin-SDK
-
-- **Nhimself** — Phase detection research and reference implementation  
-  https://github.com/Nhimself/starrupture_timermod  
-  *(Phase polling logic was studied and adapted from this project)*
-
-- **Dumper-7** — Unreal Engine 5 SDK generation tool used to expose game internals  
-  https://github.com/Encryqed/Dumper-7
-
-We do not claim ownership of any game data, SDK structures, or techniques sourced from the above projects.  
-All credit for the underlying game belongs to the Star Rupture development team.
-
----
-
-## Disclaimer — AI / Vibe Coding
-
-> **⚠ This mod was built entirely through vibe coding using [Claude](https://claude.ai) (Anthropic AI).**
->
-> That means the code was written iteratively through conversation with an AI assistant, not by a formally trained software engineer reviewing every line with deep expertise.  
-> While it has been tested and is working on the developer's machine, **there is no guarantee it is free of bugs, memory issues, or unexpected behaviour.**
->
-> **Use this mod entirely at your own risk.**  
-> The author takes no responsibility for crashes, corrupted saves, bans, or any other issues that may arise from its use.  
-> Always keep backups and stay within the game's terms of service.
-
-## License
-
-This mod is released to the community with no restrictions.  
-You are free to **use, modify, fork, and redistribute** it however you like.  
-No attribution required, though it is always appreciated.
-
-If you improve it, share it — that is the spirit it was built in.
-
----
-
-## Source Code
-
-The full source code is available on GitHub:  
-https://github.com/juntoaxx/StarRuptureTimer
-
----
-
-## Bugs / Feedback
-
-Found a bug or want to suggest something?  
-Drop a comment on the Nexus page or open an issue at:  
-https://github.com/juntoaxx/StarRuptureTimer/issues
+Issues: https://github.com/juntoaxx/StarRuptureTimer/issues

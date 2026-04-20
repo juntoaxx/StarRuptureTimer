@@ -33,6 +33,20 @@ static std::mutex g_logFileMutex;
 static char       g_logFilePath[MAX_PATH] = { 0 };
 static bool       g_debugModeEnabled = false;
 
+struct AlarmConfig {
+    bool enabled = false;
+    int  phase = 0; // 0=Stable,1=Incoming,2=Burning,3=Cooling,4=Stabilizing
+    int  triggerSeconds = 300;
+    int  beepIntervalMs = 1000;
+};
+static AlarmConfig g_alarmConfig;
+static std::mutex  g_alarmMutex;
+static bool        g_alarmLooping = false;
+static int         g_alarmCanceledPhase = -1;
+static int         g_alarmLastPhase = -1;
+static bool        g_alarmTriggeredThisPhase = false;
+static ULONGLONG   g_alarmNextBeepTick = 0;
+
 static void ResolveLogFilePath()
 {
     if (g_logFilePath[0] != '\0')
@@ -89,9 +103,37 @@ static void AppendDebugLog(const char* fmt, ...)
     }
 }
 
+static void StopAlarmLoop(const char* reason)
+{
+    if (!g_alarmLooping)
+        return;
+
+    g_alarmLooping = false;
+    g_alarmNextBeepTick = 0;
+
+    AppendDebugLog("ALARM_STOP reason=%s", reason ? reason : "unknown");
+}
+
+static bool StartAlarmLoop()
+{
+    if (g_alarmLooping)
+        return true;
+
+    AlarmConfig cfg;
+    {
+        std::lock_guard<std::mutex> lk(g_alarmMutex);
+        cfg = g_alarmConfig;
+    }
+
+    g_alarmLooping = true;
+    g_alarmNextBeepTick = 0; // Fire immediately on next tick pass.
+    AppendDebugLog("ALARM_START source=beep intervalMs=%d", cfg.beepIntervalMs);
+    return true;
+}
+
 static PluginInfo s_info = {
     "StarRuptureTimer",
-    "1.1.0",
+    "1.3.0",
     "Juntoaxx",
     "HUD overlay showing the current Arcadia rupture phase and countdown.",
     PLUGIN_INTERFACE_VERSION
@@ -100,7 +142,6 @@ static PluginInfo s_info = {
 // ---------------------------------------------------------------------------
 //  32-colour preset table
 //  Set Preset=N in any [Colors.*] section to pick a named colour.
-//  Preset=0 (default) uses the custom R/G/B values instead.
 // ---------------------------------------------------------------------------
 
 struct ColorPreset { const char* name; int r, g, b; };
@@ -200,43 +241,37 @@ static const ConfigEntry k_configEntries[] = {
     // Each phase has its own colour used for the phase name, timer text,
     // accent bar, and progress bar fill.
     //
-    // TWO ways to set a colour:
-    //   Option A — Preset: set Preset=1-32 to pick a named colour from the list.
-    //              The R/G/B values below are ignored when Preset is 1-32.
-    //   Option B — Custom: set Preset=0, then edit R, G, B (each 0-255).
+    // Set Preset=1-32 to pick a named colour from the list.
     //
     // Colour presets:
     //   " PRESET_LIST "
 
     // Stable phase — shown while Arcadia is calm.  Default: teal (14).
-    { "Colors.Stable", "Preset", ConfigValueType::Integer, "0",  PRESET_LIST },
-    { "Colors.Stable", "R",      ConfigValueType::Integer, "30",  "Custom red   0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Stable", "G",      ConfigValueType::Integer, "195", "Custom green 0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Stable", "B",      ConfigValueType::Integer, "210", "Custom blue  0-255 (ignored when Preset is 1-32)" },
+    { "Colors.Stable", "Preset", ConfigValueType::Integer, "14",  PRESET_LIST },
 
     // Incoming phase — rupture is approaching.  Default: amber (9).
-    { "Colors.Incoming", "Preset", ConfigValueType::Integer, "0",  PRESET_LIST },
-    { "Colors.Incoming", "R",      ConfigValueType::Integer, "220", "Custom red   0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Incoming", "G",      ConfigValueType::Integer, "170", "Custom green 0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Incoming", "B",      ConfigValueType::Integer, "40",  "Custom blue  0-255 (ignored when Preset is 1-32)" },
+    { "Colors.Incoming", "Preset", ConfigValueType::Integer, "9",  PRESET_LIST },
 
     // Burning phase — active rupture wave.  Default: orange-red (8).
-    { "Colors.Burning", "Preset", ConfigValueType::Integer, "0",  PRESET_LIST },
-    { "Colors.Burning", "R",      ConfigValueType::Integer, "220", "Custom red   0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Burning", "G",      ConfigValueType::Integer, "70",  "Custom green 0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Burning", "B",      ConfigValueType::Integer, "30",  "Custom blue  0-255 (ignored when Preset is 1-32)" },
+    { "Colors.Burning", "Preset", ConfigValueType::Integer, "8",  PRESET_LIST },
 
     // Cooling phase — wave receding.  Default: cool blue (17).
-    { "Colors.Cooling", "Preset", ConfigValueType::Integer, "0",  PRESET_LIST },
-    { "Colors.Cooling", "R",      ConfigValueType::Integer, "40",  "Custom red   0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Cooling", "G",      ConfigValueType::Integer, "140", "Custom green 0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Cooling", "B",      ConfigValueType::Integer, "210", "Custom blue  0-255 (ignored when Preset is 1-32)" },
+    { "Colors.Cooling", "Preset", ConfigValueType::Integer, "17",  PRESET_LIST },
 
     // Stabilizing phase — regrowth after the wave.  Default: muted teal-grey (30).
-    { "Colors.Stabilizing", "Preset", ConfigValueType::Integer, "0",  PRESET_LIST },
-    { "Colors.Stabilizing", "R",      ConfigValueType::Integer, "100", "Custom red   0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Stabilizing", "G",      ConfigValueType::Integer, "155", "Custom green 0-255 (ignored when Preset is 1-32)" },
-    { "Colors.Stabilizing", "B",      ConfigValueType::Integer, "165", "Custom blue  0-255 (ignored when Preset is 1-32)" },
+    { "Colors.Stabilizing", "Preset", ConfigValueType::Integer, "30",  PRESET_LIST },
+
+        // ── Alarm ───────────────────────────────────────────────────────────────
+        { "Alarm", "Enabled",        ConfigValueType::Boolean, "false",
+            "true = enable phase alarm | false = disable alarm" },
+        { "Alarm", "Phase",          ConfigValueType::Integer, "0",
+            "Trigger phase: 0=Stable, 1=Incoming, 2=Burning, 3=Cooling, 4=Stabilizing" },
+        { "Alarm", "TriggerMinutes", ConfigValueType::Integer, "5",
+            "Alarm threshold minutes before phase ends" },
+        { "Alarm", "TriggerSeconds", ConfigValueType::Integer, "0",
+            "Alarm threshold seconds before phase ends" },
+        { "Alarm", "BeepIntervalMs", ConfigValueType::Integer, "1000",
+            "Milliseconds between beeps while alarm is active" },
 
 };
 static const ConfigSchema k_schema = { k_configEntries, sizeof(k_configEntries) / sizeof(k_configEntries[0]) };
@@ -296,32 +331,57 @@ static void LoadDisplayConfig()
     d.posY      = s->config->ReadInt(s, "Display", "PosY", -1);
     d.rotation  = std::max(-90, std::min(90, s->config->ReadInt(s, "Display", "Rotation", 0)));
 
-    auto readPhase = [&](Phase& ph, const char* sec, int dr, int dg, int db) {
-        int preset = s->config->ReadInt(s, sec, "Preset", 0);
-        if (preset >= 1 && preset <= 32) {
-            const ColorPreset& p = k_presets[preset - 1];
-            ph.r = Chan(p.r);
-            ph.g = Chan(p.g);
-            ph.b = Chan(p.b);
-        } else {
-            ph.r = Chan(s->config->ReadInt(s, sec, "R", dr));
-            ph.g = Chan(s->config->ReadInt(s, sec, "G", dg));
-            ph.b = Chan(s->config->ReadInt(s, sec, "B", db));
-        }
+    auto readPhase = [&](Phase& ph, const char* sec, int defaultPreset) {
+        int preset = s->config->ReadInt(s, sec, "Preset", defaultPreset);
+        preset = std::max(1, std::min(32, preset));
+        const ColorPreset& p = k_presets[preset - 1];
+        ph.r = Chan(p.r);
+        ph.g = Chan(p.g);
+        ph.b = Chan(p.b);
     };
-    readPhase(k_stable,      "Colors.Stable",        30, 195, 210);
-    readPhase(k_incoming,    "Colors.Incoming",      220, 170,  40);
-    readPhase(k_burning,     "Colors.Burning",       220,  70,  30);
-    readPhase(k_cooling,     "Colors.Cooling",        40, 140, 210);
-    readPhase(k_stabilizing, "Colors.Stabilizing",   100, 155, 165);
+    readPhase(k_stable,      "Colors.Stable",      14);
+    readPhase(k_incoming,    "Colors.Incoming",     9);
+    readPhase(k_burning,     "Colors.Burning",      8);
+    readPhase(k_cooling,     "Colors.Cooling",     17);
+    readPhase(k_stabilizing, "Colors.Stabilizing", 30);
 
     std::lock_guard<std::mutex> lk(g_displayMutex);
     g_display = d;
 }
 
+static void LoadAlarmConfig()
+{
+    auto* s = GetSelf();
+    if (!s || !s->config) return;
+
+    AlarmConfig cfg;
+    cfg.enabled = s->config->ReadBool(s, "Alarm", "Enabled", false);
+    cfg.phase = std::max(0, std::min(4, s->config->ReadInt(s, "Alarm", "Phase", 0)));
+    int mins = std::max(0, s->config->ReadInt(s, "Alarm", "TriggerMinutes", 5));
+    int secs = std::max(0, std::min(59, s->config->ReadInt(s, "Alarm", "TriggerSeconds", 0)));
+    cfg.triggerSeconds = mins * 60 + secs;
+    cfg.beepIntervalMs = std::max(100, std::min(5000, s->config->ReadInt(s, "Alarm", "BeepIntervalMs", 1000)));
+
+    {
+        std::lock_guard<std::mutex> lk(g_alarmMutex);
+        g_alarmConfig = cfg;
+    }
+
+    if (!cfg.enabled) {
+        StopAlarmLoop("config_disabled");
+    }
+
+    AppendDebugLog("ALARM_CONFIG enabled=%d phase=%d triggerSec=%d beepIntervalMs=%d",
+        cfg.enabled ? 1 : 0,
+        cfg.phase,
+        cfg.triggerSeconds,
+        cfg.beepIntervalMs);
+}
+
 static void OnConfigChanged(const char*, const char*, const char*)
 {
     LoadDisplayConfig();
+    LoadAlarmConfig();
 
     if (!g_self || !g_self->config)
         return;
@@ -790,6 +850,53 @@ static void OnTick(float delta)
         PollTimerState();
     }
 
+    TimerState ts;
+    {
+        std::lock_guard<std::mutex> lk(g_timerMutex);
+        ts = g_state;
+    }
+
+    if (ts.hasData && ts.phase) {
+        int currentPhase = (int)PhaseIdFromPtr(ts.phase);
+        if (currentPhase != g_alarmLastPhase) {
+            g_alarmLastPhase = currentPhase;
+            g_alarmTriggeredThisPhase = false;
+            g_alarmCanceledPhase = -1;
+        }
+
+        AlarmConfig cfg;
+        {
+            std::lock_guard<std::mutex> lk(g_alarmMutex);
+            cfg = g_alarmConfig;
+        }
+
+        if (cfg.enabled && currentPhase == cfg.phase && !g_alarmTriggeredThisPhase && g_alarmCanceledPhase != currentPhase) {
+            if (ts.remaining <= (float)cfg.triggerSeconds) {
+                if (StartAlarmLoop()) {
+                    g_alarmTriggeredThisPhase = true;
+                    AppendDebugLog("ALARM_TRIGGER phase=%s rem=%.2f triggerSec=%d",
+                        ts.phase->name,
+                        ts.remaining,
+                        cfg.triggerSeconds);
+                }
+            }
+        }
+    }
+
+    if (g_alarmLooping) {
+        AlarmConfig cfg;
+        {
+            std::lock_guard<std::mutex> lk(g_alarmMutex);
+            cfg = g_alarmConfig;
+        }
+
+        ULONGLONG now = GetTickCount64();
+        if (g_alarmNextBeepTick == 0 || now >= g_alarmNextBeepTick) {
+            MessageBeep(MB_ICONHAND);
+            g_alarmNextBeepTick = now + (ULONGLONG)std::max(100, cfg.beepIntervalMs);
+        }
+    }
+
     MaybeLogSyncSample();
 }
 
@@ -819,6 +926,8 @@ static void OnAnyWorldBeginPlay(SDK::UWorld* world, const char* worldName)
 
 static void OnTestKey(EModKey, EModKeyEvent)
 {
+    StopAlarmLoop("f8_cancel");
+
     PollTimerState();
 
     PollDebugState pd;
@@ -828,6 +937,10 @@ static void OnTestKey(EModKey, EModKeyEvent)
     }
 
     std::lock_guard<std::mutex> lk(g_timerMutex);
+    if (g_state.hasData && g_state.phase) {
+        g_alarmCanceledPhase = (int)PhaseIdFromPtr(g_state.phase);
+    }
+
     if (g_state.hasData && g_state.phase) {
         LOG_INFO("RuptureTimer: [SYNC] %s %02d:%02d",
             g_state.phase->name,
@@ -931,9 +1044,13 @@ static void OnPostRender(void* hudPtr)
 
     bool waitingServer = !ts.hasData;
     if (waitingServer) {
-        ts.phase = &k_unknown;
+        // Before first trusted sync, style the label as Stable so color presets apply immediately.
+        ts.phase = &k_stable;
         ts.remaining = 0.f;
     }
+
+    // While alarm is sounding, blink between normal timer and dismiss prompt.
+    bool alarmBlinkPrompt = g_alarmLooping && (((GetTickCount64() / 350ULL) % 2ULL) == 0ULL);
 
     // Panel text layout — phase name on top, countdown below it
     float textPad    = pad;
@@ -943,17 +1060,26 @@ static void OnPostRender(void* hudPtr)
     // ── Phase name text ───────────────────────────────────────────────────────
     {
         wchar_t wbuf[64];
-        AsciiToWide(ts.phase->name, wbuf, 64);
+        if (alarmBlinkPrompt) {
+            AsciiToWide("Press F8", wbuf, 64);
+        } else {
+            AsciiToWide(ts.phase->name, wbuf, 64);
+        }
         SDK::FString fs(wbuf);
         auto pos = R(-hw + textPad, textDy);
-        hud->DrawText(fs, LC(ts.phase->r, ts.phase->g, ts.phase->b, a),
+        SDK::FLinearColor phaseColor = alarmBlinkPrompt
+            ? LC(0.95f, 0.25f, 0.25f, a)
+            : LC(ts.phase->r, ts.phase->g, ts.phase->b, a);
+        hud->DrawText(fs, phaseColor,
                       (float)pos.X, (float)pos.Y, nullptr, dc.fontScale, false);
     }
 
     // ── Countdown text (centered under phase name) ────────────────────────────
     {
-        char    cbuf[8];
-        if (waitingServer) {
+        char    cbuf[16];
+        if (alarmBlinkPrompt) {
+            snprintf(cbuf, sizeof(cbuf), "to Dismiss");
+        } else if (waitingServer) {
             snprintf(cbuf, sizeof(cbuf), "XX:XX");
         } else {
             int mins = (int)ts.remaining / 60;
@@ -964,9 +1090,11 @@ static void OnPostRender(void* hudPtr)
         AsciiToWide(cbuf, wbuf, 16);
         SDK::FString fs(wbuf);
         auto pos = R(-hw + textPad, textDy + lineHeight);
-        SDK::FLinearColor timerColor = waitingServer
-            ? LC(0.9f, 0.2f, 0.2f, a * 0.95f)
-            : LC(ts.phase->r, ts.phase->g, ts.phase->b, a * 0.85f);
+        SDK::FLinearColor timerColor = alarmBlinkPrompt
+            ? LC(0.95f, 0.25f, 0.25f, a * 0.95f)
+            : (waitingServer
+                ? LC(0.9f, 0.2f, 0.2f, a * 0.95f)
+                : LC(ts.phase->r, ts.phase->g, ts.phase->b, a * 0.85f));
         hud->DrawText(fs, timerColor,
                       (float)pos.X, (float)pos.Y, nullptr, dc.fontScale, false);
     }
@@ -1003,6 +1131,7 @@ __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     }
 
     LoadDisplayConfig();
+    LoadAlarmConfig();
 
 #if defined(MODLOADER_CLIENT_BUILD)
     self->hooks->Engine->RegisterOnTick(&OnTick);
@@ -1028,6 +1157,7 @@ __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 __declspec(dllexport) void PluginShutdown()
 {
     LOG_INFO("RuptureTimer: shutdown");
+    StopAlarmLoop("shutdown");
     if (!g_self) return;
 
 #if defined(MODLOADER_CLIENT_BUILD)
